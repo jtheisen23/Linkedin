@@ -8,6 +8,7 @@ websites open in your browser can't read or change your data.
 
 import io
 import json
+import os
 import re
 import sqlite3
 import threading
@@ -16,7 +17,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from netreach import db
+from netreach import ai_drafts, db
 from netreach.export import write_contacts_csv
 from netreach.segment import ORDERS, Filters, contact_ids, count_contacts, select_contacts
 
@@ -35,6 +36,8 @@ MAX_BODY = 1_000_000
 LIST_FIELDS = ("id", "first_name", "last_name", "headline", "company", "position", "location",
                "email", "connected_on", "profile_url")
 _CONTACT_PATH = re.compile(r"^/api/contacts/(\d+)(/notes|/tags)?$")
+_OUTREACH_PATH = re.compile(r"^/api/outreach/(\d+)$")
+MAX_DRAFTS_PER_RUN = 1000
 
 
 class ApiError(Exception):
@@ -80,11 +83,99 @@ def _names(value) -> list[str]:
     return value
 
 
+class DraftJob:
+    """Has Claude write a campaign's drafts in a background thread, one run at a time.
+
+    Each draft is saved as it arrives, so stopping (or closing netreach) keeps what's done.
+    """
+
+    def __init__(self, db_path: str | Path):
+        self.db_path = db_path
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._state = {"running": False}
+
+    def state(self) -> dict:
+        with self._lock:
+            return {**self._state, "errors": list(self._state.get("errors", []))}
+
+    def start(self, campaign: str, brief: str, contacts: list[dict], effort: str) -> None:
+        with self._lock:
+            if self._state.get("running"):
+                raise ApiError(409, "Claude is already writing drafts. Wait for it to finish, or stop it first.")
+            self._stop.clear()
+            self._state = {
+                "running": True, "campaign": campaign, "total": len(contacts), "done": 0, "failed": 0,
+                "errors": [], "error": "", "stopped": False, "started_at": db.now(), "finished_at": "",
+            }
+        threading.Thread(target=self._run, args=(campaign, brief, contacts, effort), daemon=True).start()
+
+    def stop(self) -> None:
+        self._stop.set()
+
+    def _run(self, campaign: str, brief: str, contacts: list[dict], effort: str) -> None:
+        conn = db.connect(self.db_path)
+        drafts = None
+        try:
+            drafts = ai_drafts.draft_many(ai_drafts.make_client(), brief, contacts, effort=effort)
+            for contact, result in drafts:
+                if isinstance(result, ai_drafts.DraftError):
+                    name = f"{contact['first_name']} {contact['last_name']}".strip()
+                    with self._lock:
+                        self._state["failed"] += 1
+                        self._state["errors"] = (self._state["errors"] + [f"{name}: {result}"])[-5:]
+                else:
+                    with conn:
+                        db.add_draft(conn, contact["id"], campaign, result.message, result.relevance, result.reason)
+                    with self._lock:
+                        self._state["done"] += 1
+                if self._stop.is_set():
+                    with self._lock:
+                        self._state["stopped"] = True
+                    break
+        except ai_drafts.FatalDraftError as exc:
+            with self._lock:
+                self._state["error"] = str(exc)
+        except Exception as exc:  # report anything unexpected on the page instead of dying silently
+            with self._lock:
+                self._state["error"] = f"Something went wrong: {exc!r}"
+        finally:
+            if drafts is not None:
+                drafts.close()
+            conn.close()
+            with self._lock:
+                self._state["running"] = False
+                self._state["finished_at"] = db.now()
+
+
+def _audience(conn: sqlite3.Connection, campaign: str, data: dict) -> tuple[list[dict], int]:
+    """People a run would draft for: matching the tag/title, not already in the campaign, up to the limit.
+
+    Returns (contacts, how many matching people were skipped because they're already in it).
+    """
+    try:
+        limit = int(data.get("limit", 25))
+    except (TypeError, ValueError):
+        raise ApiError(400, "limit must be a number") from None
+    if not 1 <= limit <= MAX_DRAFTS_PER_RUN:
+        raise ApiError(400, f"Choose between 1 and {MAX_DRAFTS_PER_RUN} people per run.")
+    filters = Filters(tag=str(data.get("tag") or ""), title=str(data.get("title") or ""))
+    already = db.campaign_contact_ids(conn, campaign)
+    matching = select_contacts(conn, filters)
+    fresh = [dict(row) for row in matching if row["id"] not in already]
+    return fresh[:limit], len(matching) - len(fresh)
+
+
+def _has_api_key() -> bool:
+    return bool(os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN"))
+
+
 class App:
     """Routes requests to handlers. Kept separate from HTTP plumbing so it's easy to test."""
 
     def __init__(self, db_path: str | Path):
         self.db_path = db_path
+        self.drafting = DraftJob(db_path)
 
     def handle(self, method: str, path: str, query: dict, body: bytes):
         """Return (status, content_type, payload_bytes, extra_headers)."""
@@ -153,6 +244,59 @@ class App:
         if method == "POST" and path == "/api/tags/delete":
             db.delete_tag(conn, str(data.get("name", "")))
             return self._json({"ok": True})
+
+        if method == "GET" and path == "/api/campaigns":
+            return self._json({
+                "campaigns": db.list_campaigns(conn),
+                "sent_today": db.sent_today(conn),
+                "has_api_key": _has_api_key(),
+                "job": self.drafting.state(),
+            })
+
+        if method == "GET" and path == "/api/outreach":
+            campaign = (query.get("campaign") or [""])[0]
+            status = (query.get("status") or ["draft"])[0]
+            filters = filters_from_query(query)
+            total, items = db.campaign_outreach(conn, campaign, status, filters.limit, filters.offset)
+            return self._json({"total": total, "items": items})
+
+        if method == "POST" and path in ("/api/campaigns/plan", "/api/campaigns/draft"):
+            campaign = db.normalize_campaign(str(data.get("campaign", "")))
+            contacts, already = _audience(conn, campaign, data)
+            low, high = ai_drafts.COST_PER_DRAFT.get(str(data.get("effort") or "medium"), ai_drafts.COST_PER_DRAFT["medium"])
+            plan = {"count": len(contacts), "already": already, "cost": [round(low * len(contacts), 2),
+                                                                        round(high * len(contacts), 2)]}
+            if path.endswith("/plan"):
+                return self._json(plan)
+            effort = str(data.get("effort") or "medium")
+            if effort not in ai_drafts.EFFORTS:
+                raise ApiError(400, f"effort must be one of {', '.join(ai_drafts.EFFORTS)}")
+            brief = ai_drafts.clean_brief(str(data.get("brief", "")))
+            if not brief:
+                raise ApiError(400, "Write a brief so Claude knows what you're reaching out about.")
+            if not contacts:
+                raise ApiError(400, "No one new to write to. Everyone matching is already in this campaign.")
+            db.save_campaign(conn, campaign, brief)
+            self.drafting.start(campaign, brief, contacts, effort)
+            return self._json({**plan, "job": self.drafting.state()})
+
+        if method == "GET" and path == "/api/drafting":
+            return self._json({"job": self.drafting.state()})
+
+        if method == "POST" and path == "/api/drafting/stop":
+            self.drafting.stop()
+            return self._json({"job": self.drafting.state()})
+
+        match = _OUTREACH_PATH.match(path)
+        if match and method == "POST":
+            message, status = data.get("message"), data.get("status")
+            if message is not None and not isinstance(message, str):
+                raise ApiError(400, "message must be text")
+            if status is not None and not isinstance(status, str):
+                raise ApiError(400, "status must be text")
+            if not db.update_outreach(conn, int(match.group(1)), message=message, status=status):
+                raise ApiError(404, "message not found")
+            return self._json({"ok": True, "sent_today": db.sent_today(conn)})
 
         match = _CONTACT_PATH.match(path)
         if match:

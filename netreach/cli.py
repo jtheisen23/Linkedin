@@ -6,7 +6,6 @@ import os
 import random
 import sys
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import anthropic
@@ -247,27 +246,18 @@ def draft_with_claude(conn, args) -> int:
         print(f"error: couldn't set up the Anthropic client ({exc}). Set ANTHROPIC_API_KEY.", file=sys.stderr)
         return 1
 
+    if not args.dry_run:
+        db.save_campaign(conn, args.campaign, brief)
     print(f"Asking {args.model} to draft {len(todo)} messages ({args.workers} at a time)...")
     added = failed = 0
-    executor = ThreadPoolExecutor(max_workers=max(1, args.workers))
-    futures = {
-        executor.submit(ai_drafts.write_draft, client, brief, row, args.model, args.effort): row
-        for row in todo
-    }
+    drafts = ai_drafts.draft_many(client, brief, todo, args.model, args.effort, args.workers)
     try:
-        for done, future in enumerate(as_completed(futures), 1):
-            row = futures[future]
+        for done, (row, draft) in enumerate(drafts, 1):
             name = f"{row['first_name']} {row['last_name']}".strip()
-            try:
-                draft = future.result()
-            except ai_drafts.FatalDraftError as exc:
-                print(f"error: {exc}", file=sys.stderr)
-                return 1
-            except ai_drafts.DraftError as exc:
+            if isinstance(draft, ai_drafts.DraftError):
                 failed += 1
-                print(f"  skipped {name}: {exc}", file=sys.stderr)
+                print(f"  skipped {name}: {draft}", file=sys.stderr)
                 continue
-
             if args.dry_run:
                 print(f"--- {name} ({draft.relevance}: {draft.reason})  {row['profile_url']}\n{draft.message}\n")
                 continue
@@ -276,8 +266,11 @@ def draft_with_claude(conn, args) -> int:
             added += 1
             if done % 25 == 0:
                 print(f"  ...{done} of {len(todo)}")
+    except ai_drafts.FatalDraftError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
     finally:
-        executor.shutdown(wait=False, cancel_futures=True)
+        drafts.close()
 
     if args.dry_run:
         print(f"{len(todo) - failed} drafts previewed; nothing saved.")

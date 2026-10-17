@@ -121,6 +121,27 @@ netreach export founders.csv --title "founder,ceo"
   included in search.
 - **See outreach** for each person, and **export** the current view to CSV, with tags
   and notes included.
+- **Run campaigns** on the **Campaigns** tab (below).
+
+### Campaigns on the web page
+
+1. Filter by a tag on the People tab and click **Write messages to "…"**, or go to
+   **Campaigns → + New campaign**.
+2. Name the campaign, choose who to write to (a tag, optionally narrowed by title) and
+   how many people this time, and write the brief. The page shows how many people
+   that is and a rough cost before you start.
+3. Claude writes the drafts in the background. They're saved as they arrive, and you
+   can stop at any time.
+4. Work through **To send**, best fits first. Edit any draft (changes save as you
+   type), click **Copy & open LinkedIn**, paste it into a message there, send it, then
+   click **Mark sent**. Later, use **Got a reply** on the **Sent** tab.
+5. **Write more drafts** continues the same campaign with people who aren't in it yet,
+   so failed drafts get retried and nobody is written to twice.
+
+The sidebar counts what you've marked sent today. About 20–30 a day is a safe pace.
+
+Writing drafts needs `ANTHROPIC_API_KEY` in your `.env` file. If you add it while
+`netreach web` is running, stop it (Control+C) and start it again.
 
 Tags work in the terminal too: `--tag "warm lead,investor"` (any of) or `--untagged`
 on `list`, `export` and `draft`. For example, to have Claude draft only for people

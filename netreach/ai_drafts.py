@@ -2,6 +2,7 @@
 
 import json
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import date
 
@@ -9,6 +10,8 @@ import anthropic
 
 DEFAULT_MODEL = "claude-opus-5-5"
 EFFORTS = ("low", "medium", "high")
+# Rough dollars per draft (low, high) at each effort, for the estimate shown before a run.
+COST_PER_DRAFT = {"low": (0.005, 0.02), "medium": (0.01, 0.04), "high": (0.02, 0.08)}
 # If a safety classifier declines a request, the API re-runs it on Anthropic's
 # recommended fallback model instead of returning a refusal.
 FALLBACK_BETA = "server-side-fallback-2026-07-01"
@@ -168,3 +171,22 @@ def write_draft(client, brief: str, contact, model: str = DEFAULT_MODEL, effort:
     except anthropic.APIError as exc:  # rate limits after retries, server errors, network
         raise DraftError(f"Anthropic API error: {exc}") from None
     return parse_response(response)
+
+
+def draft_many(client, brief: str, contacts, model: str = DEFAULT_MODEL, effort: str = "medium",
+               workers: int = 4):
+    """Draft for many contacts in parallel, yielding (contact, Draft or DraftError) as each finishes.
+
+    Raises FatalDraftError as soon as one request shows that every request would fail.
+    Closing the generator early cancels the drafts that haven't started yet.
+    """
+    executor = ThreadPoolExecutor(max_workers=max(1, workers))
+    futures = {executor.submit(write_draft, client, brief, c, model, effort): c for c in contacts}
+    try:
+        for future in as_completed(futures):
+            try:
+                yield futures[future], future.result()
+            except DraftError as exc:
+                yield futures[future], exc
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)

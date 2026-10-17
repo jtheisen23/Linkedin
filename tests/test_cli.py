@@ -178,3 +178,17 @@ def test_tag_filter_on_cli_commands(run, capsys, tmp_path):
     out_csv = tmp_path / "warm.csv"
     assert run("export", str(out_csv), "--tag", "warm") == 0
     assert "warm" in out_csv.read_text().splitlines()[1]
+
+
+def test_cli_drafting_records_the_campaign_brief(run, monkeypatch, tmp_path, capsys):
+    from netreach import ai_drafts, db
+
+    monkeypatch.setattr(ai_drafts, "make_client", lambda: object())
+    monkeypatch.setattr(ai_drafts, "write_draft",
+                        lambda client, brief, contact, model, effort: ai_drafts.Draft("Hi", "high", "fit"))
+    brief = tmp_path / "brief.md"
+    brief.write_text("Selling dashboards.")
+    run("import-csv", str(FIXTURE))
+    assert run("draft", "launch", "--brief", str(brief), "--limit", "1") == 0
+    conn = db.connect(tmp_path / "net.db")
+    assert [(c["name"], c["brief"], c["draft"]) for c in db.list_campaigns(conn)] == [("launch", "Selling dashboards.", 1)]
