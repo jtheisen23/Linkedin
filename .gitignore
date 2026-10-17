@@ -1,0 +1,12 @@
+# Your network is other people's personal data: keep it out of git.
+data/
+*.db
+*.zip
+*.csv
+!tests/fixtures/*.csv
+.env
+
+__pycache__/
+*.egg-info/
+.venv/
+.pytest_cache/
