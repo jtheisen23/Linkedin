@@ -10,11 +10,15 @@
 <body>
   <header class="topbar">
     <div class="brand">netreach</div>
+    <nav class="tabs" aria-label="Views">
+      <a href="#people" id="tab-people" class="tab">People</a>
+      <a href="#campaigns" id="tab-campaigns" class="tab">Campaigns</a>
+    </nav>
     <div class="stats" id="stats"></div>
     <a class="btn" id="export" href="/export.csv" download>Export CSV</a>
   </header>
 
-  <div class="layout">
+  <div class="layout" id="people-view">
     <aside class="sidebar">
       <input id="keyword" class="search" type="search" placeholder="Search people and notes…" autocomplete="off">
 
@@ -43,6 +47,7 @@
     <main class="main">
       <div class="toolbar">
         <div id="result-count" class="result-count"></div>
+        <button id="draft-for-tag" class="btn primary" type="button" hidden></button>
         <label class="sort">Sort
           <select id="sort">
             <option value="recent">Recently connected</option>
@@ -68,7 +73,8 @@
             <tr>
               <th class="col-check"><input type="checkbox" id="select-page" aria-label="Select everyone shown"></th>
               <th>Name</th>
-              <th class="col-role">Role</th>
+              <th class="col-role">Title</th>
+              <th class="col-company">Company</th>
               <th class="col-connected">Connected</th>
               <th>Tags</th>
             </tr>
@@ -81,6 +87,69 @@
       <button id="more" class="btn more" type="button" hidden>Show more</button>
     </main>
   </div>
+
+  <div class="layout" id="campaigns-view" hidden>
+    <aside class="sidebar">
+      <button id="new-campaign" class="btn primary block" type="button">+ New campaign</button>
+      <p id="sent-today" class="pace"></p>
+      <ul id="campaign-list" class="campaign-list"></ul>
+    </aside>
+    <main class="main">
+      <div id="job-banner" class="job-banner" hidden></div>
+      <div id="campaign-detail"></div>
+    </main>
+  </div>
+
+  <dialog id="campaign-dialog" class="dialog" aria-labelledby="campaign-dialog-title">
+    <form id="campaign-form" method="dialog">
+      <h2 id="campaign-dialog-title">New campaign</h2>
+      <p class="muted">Claude writes a personal message for each person. Nothing is sent: you review every
+        draft and send it yourself from the campaign page.</p>
+
+      <label class="field">Campaign name
+        <input id="cf-name" required maxlength="60" placeholder="e.g. Founders, October" autocomplete="off">
+      </label>
+
+      <fieldset class="field">
+        <legend>Who to write to</legend>
+        <div class="pair">
+          <label>Tag <select id="cf-tag"></select></label>
+          <label>Title contains <input id="cf-title" placeholder="founder, ceo (optional)" autocomplete="off"></label>
+        </div>
+        <label>How many people this time
+          <input id="cf-limit" type="number" min="1" max="1000" value="25">
+        </label>
+      </fieldset>
+
+      <label class="field">Brief
+        <textarea id="cf-brief" rows="9" required placeholder="About me: …
+What I'm reaching out about: …
+Who it's for (and who it isn't): …
+The ask: …
+Tone: …"></textarea>
+      </label>
+
+      <label class="field">How carefully Claude writes
+        <select id="cf-effort">
+          <option value="medium">Standard (recommended)</option>
+          <option value="low">Faster and cheaper</option>
+          <option value="high">Most careful</option>
+        </select>
+      </label>
+
+      <p id="cf-plan" class="plan"></p>
+      <p id="cf-key-warning" class="warning" hidden>
+        No Anthropic API key found. Get one at console.anthropic.com, add a line
+        <code>ANTHROPIC_API_KEY=…</code> to the <code>.env</code> file in your Linkedin folder, then stop
+        netreach web (Control+C in the terminal) and start it again.
+      </p>
+
+      <div class="dialog-actions">
+        <button id="cf-cancel" class="btn" type="button">Cancel</button>
+        <button id="cf-submit" class="btn primary" type="submit">Write drafts</button>
+      </div>
+    </form>
+  </dialog>
 
   <aside id="drawer" class="drawer" hidden aria-label="Contact details"></aside>
   <datalist id="tag-options"></datalist>
