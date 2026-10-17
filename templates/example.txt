@@ -1,0 +1,6 @@
+Hi {first_name},
+
+Hope all is well at {company|work}! I'm building something for teams like yours and
+would really value your perspective as a {position|leader in your field}.
+
+Open to a quick 15-minute chat next week?
