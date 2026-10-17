@@ -1,7 +1,8 @@
 # netreach
 
-Pull your LinkedIn network into a local database, slice it into segments, and have
-Claude draft a personalized message for each person, which you review and send yourself.
+Pull your LinkedIn network into a local database, search, tag and take notes on it in
+your browser, and have Claude draft a personalized message for each person, which you
+review and send yourself.
 
 There are two ways to get your connections in, and you can use both. Records for the
 same person are merged by their profile URL.
@@ -66,12 +67,17 @@ fresh ones when that happens.
 ### Or use the export (no cookies needed)
 
 LinkedIn → **Me → Settings & Privacy → Data privacy → Get a copy of your data** → pick
-**Connections**. You'll get an email when it's ready, usually within minutes. Both the
-`Connections.csv` file and the full ZIP work:
+**Connections**. LinkedIn emails you when it's ready. Picking just Connections is usually
+quick, but the full archive can take up to 24 hours. Both the `Connections.csv` file
+and the full ZIP work:
 
 ```bash
 netreach import-csv ~/Downloads/Connections.csv
 ```
+
+Don't want to wait? Run `netreach sync` now and import the export whenever it arrives.
+The two merge, so the export simply fills in company, position and shared emails,
+which the live sync doesn't get.
 
 ## Usage
 
@@ -81,7 +87,8 @@ netreach import-csv ~/Downloads/Connections.csv
 netreach sync                    # live, read-only
 netreach sync --enrich 25        # ...and check 25 people for a shared email/phone
 
-# 2. Look around
+# 2. Look around (in your browser, or in the terminal)
+netreach web
 netreach stats
 netreach list --title "founder,ceo,owner" --connected-after 2023-01-01
 netreach list --company acme --has-email
@@ -101,18 +108,46 @@ netreach mark 13 --status replied
 netreach export founders.csv --title "founder,ceo"
 ```
 
+### The web page
+
+`netreach web` opens a page in your browser at http://127.0.0.1:8765. On it you can:
+
+- **Search** names, headlines, companies, positions, locations and your notes, then
+  narrow with filters (title, company, location, connection date, shared email).
+- **Tag** people. Tick rows, or tick the header box and then "Select all N matching"
+  to tag a whole search at once. Click a tag in the sidebar to filter by it, or use
+  **Edit** to rename (renaming onto an existing tag merges them) or delete one.
+- **Take notes.** Click anyone to open their details. Notes save as you type and are
+  included in search.
+- **See outreach** for each person, and **export** the current view to CSV, with tags
+  and notes included.
+
+Tags work in the terminal too: `--tag "warm lead,investor"` (any of) or `--untagged`
+on `list`, `export` and `draft`. For example, to have Claude draft only for people
+you tagged:
+
+```bash
+netreach draft q1-followup --brief my-brief.md --tag "warm lead"
+```
+
+The page only listens on your own computer (127.0.0.1), refuses requests addressed to
+any other host name, and only accepts changes from itself, so other websites open in
+your browser can't read or change your data. Press Ctrl+C in the terminal to stop it.
+Use `--port` if 8765 is taken, or `--no-browser` to skip opening a tab.
+
 ### Filters
 
 `list`, `draft` and `export` take the same filters. Commas mean "any of".
 
 | Flag | Matches |
 |---|---|
-| `--keyword` | name, headline, company, position or location |
+| `--keyword` | name, headline, company, position, location or your notes |
 | `--title` | position or headline |
 | `--company` | company or headline |
 | `--location` | location (filled by the live sync's search fallback) |
 | `--connected-after` / `--connected-before` | connection date, `YYYY-MM-DD` |
 | `--has-email` | only people who shared an email with their connections |
+| `--tag` / `--untagged` | has any of these tags / has no tags yet |
 | `--limit` | at most N contacts |
 
 ### Claude-written drafts

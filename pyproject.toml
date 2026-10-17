@@ -22,5 +22,8 @@ netreach = "netreach.cli:main"
 [tool.setuptools.packages.find]
 include = ["netreach*"]
 
+[tool.setuptools.package-data]
+netreach = ["static/*"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]

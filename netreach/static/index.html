@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>netreach</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">netreach</div>
+    <div class="stats" id="stats"></div>
+    <a class="btn" id="export" href="/export.csv" download>Export CSV</a>
+  </header>
+
+  <div class="layout">
+    <aside class="sidebar">
+      <input id="keyword" class="search" type="search" placeholder="Search people and notes…" autocomplete="off">
+
+      <details class="filters" open>
+        <summary>Filters</summary>
+        <label>Title <input id="title" placeholder="founder, ceo" autocomplete="off"></label>
+        <label>Company <input id="company" autocomplete="off"></label>
+        <label>Location <input id="location" autocomplete="off"></label>
+        <div class="pair">
+          <label>Connected after <input id="connected_after" type="date"></label>
+          <label>Before <input id="connected_before" type="date"></label>
+        </div>
+        <label class="check"><input id="has_email" type="checkbox"> Shared an email</label>
+        <button id="clear-filters" class="link" type="button">Clear filters</button>
+      </details>
+
+      <section class="tags-section">
+        <div class="section-head">
+          <h2>Tags</h2>
+          <button id="manage-tags" class="link" type="button">Edit</button>
+        </div>
+        <ul id="tag-list" class="tag-list"></ul>
+      </section>
+    </aside>
+
+    <main class="main">
+      <div class="toolbar">
+        <div id="result-count" class="result-count"></div>
+        <label class="sort">Sort
+          <select id="sort">
+            <option value="recent">Recently connected</option>
+            <option value="name">Name</option>
+            <option value="company">Company</option>
+          </select>
+        </label>
+      </div>
+
+      <div id="selection-bar" class="selection-bar" hidden>
+        <span id="selected-count"></span>
+        <button id="select-all-matching" class="link" type="button" hidden></button>
+        <span class="spacer"></span>
+        <input id="bulk-tag" list="tag-options" placeholder="Tag name" autocomplete="off">
+        <button id="bulk-add" class="btn primary" type="button">Add tag</button>
+        <button id="bulk-remove" class="btn" type="button">Remove tag</button>
+        <button id="clear-selection" class="link" type="button">Clear</button>
+      </div>
+
+      <div class="table-wrap">
+        <table id="contacts" class="contacts">
+          <thead>
+            <tr>
+              <th class="col-check"><input type="checkbox" id="select-page" aria-label="Select everyone shown"></th>
+              <th>Name</th>
+              <th class="col-role">Role</th>
+              <th class="col-connected">Connected</th>
+              <th>Tags</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+
+      <div id="empty" class="empty" hidden></div>
+      <button id="more" class="btn more" type="button" hidden>Show more</button>
+    </main>
+  </div>
+
+  <aside id="drawer" class="drawer" hidden aria-label="Contact details"></aside>
+  <datalist id="tag-options"></datalist>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+</body>
+</html>

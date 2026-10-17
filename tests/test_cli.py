@@ -156,3 +156,25 @@ def test_old_databases_get_new_outreach_columns(tmp_path):
     conn = db.connect(path)
     columns = {row["name"] for row in conn.execute("PRAGMA table_info(outreach)")}
     assert {"relevance", "reason"} <= columns
+
+
+def test_tag_filter_on_cli_commands(run, capsys, tmp_path):
+    from netreach import db
+
+    run("import-csv", str(FIXTURE))
+    conn = db.connect(tmp_path / "net.db")
+    jane = conn.execute("SELECT id FROM contacts WHERE first_name = 'Jane'").fetchone()[0]
+    db.change_tags(conn, [jane], add=["warm"])
+    conn.close()
+    capsys.readouterr()
+
+    assert run("list", "--tag", "warm") == 0
+    out = capsys.readouterr().out
+    assert "Jane Doe" in out and "John Smith" not in out
+    assert run("list", "--untagged") == 0
+    out = capsys.readouterr().out
+    assert "Jane Doe" not in out and "John Smith" in out
+
+    out_csv = tmp_path / "warm.csv"
+    assert run("export", str(out_csv), "--tag", "warm") == 0
+    assert "warm" in out_csv.read_text().splitlines()[1]

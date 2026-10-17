@@ -12,14 +12,11 @@ from pathlib import Path
 import anthropic
 
 from netreach import ai_drafts, db, templates
+from netreach.export import write_contacts_csv
 from netreach.segment import Filters, select_contacts
 from netreach.sources import csv_export, linkedin_sync
 
 DEFAULT_DB = "data/netreach.db"
-EXPORT_COLUMNS = (
-    "first_name", "last_name", "email", "phone", "company", "position", "headline",
-    "location", "profile_url", "connected_on", "sources",
-)
 
 
 def load_dotenv(path: str = ".env") -> None:
@@ -41,6 +38,8 @@ def add_filter_args(parser: argparse.ArgumentParser, default_limit: int | None =
     group.add_argument("--title", default="", help="match position or headline, e.g. 'founder,ceo'")
     group.add_argument("--company", default="", help="match company or headline")
     group.add_argument("--location", default="")
+    group.add_argument("--tag", default="", help="has any of these tags, e.g. 'warm,investor'")
+    group.add_argument("--untagged", action="store_true", help="only people with no tags yet")
     group.add_argument("--connected-after", default="", metavar="YYYY-MM-DD")
     group.add_argument("--connected-before", default="", metavar="YYYY-MM-DD")
     group.add_argument("--has-email", action="store_true", help="only people who shared an email")
@@ -50,6 +49,7 @@ def add_filter_args(parser: argparse.ArgumentParser, default_limit: int | None =
 def filters_from(args) -> Filters:
     return Filters(
         keyword=args.keyword, title=args.title, company=args.company, location=args.location,
+        tag=args.tag, untagged=args.untagged,
         connected_after=args.connected_after, connected_before=args.connected_before,
         has_email=args.has_email, limit=args.limit,
     )
@@ -190,10 +190,7 @@ def cmd_stats(conn, args) -> int:
 def cmd_export(conn, args) -> int:
     rows = select_contacts(conn, filters_from(args))
     with open(args.out, "w", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f)
-        writer.writerow(EXPORT_COLUMNS)
-        for row in rows:
-            writer.writerow([row[column] for column in EXPORT_COLUMNS])
+        write_contacts_csv(conn, rows, f)
     print(f"Wrote {len(rows)} contacts to {args.out}.")
     return 0
 
@@ -325,6 +322,18 @@ def cmd_queue(conn, args) -> int:
     return 0
 
 
+def cmd_web(conn, args) -> int:
+    from netreach import webapp
+
+    conn.close()  # the server opens its own connection per request
+    try:
+        webapp.serve(args.db, args.port, open_browser=not args.no_browser)
+    except OSError as exc:
+        print(f"error: couldn't start on port {args.port} ({exc}). Try --port 8766.", file=sys.stderr)
+        return 1
+    return 0
+
+
 def cmd_mark(conn, args) -> int:
     try:
         changed = db.set_outreach_status(conn, args.ids, args.status)
@@ -395,6 +404,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--limit", type=int, default=None)
     p.add_argument("--csv", metavar="OUT", help="write the queue to a CSV instead of printing it")
     p.set_defaults(func=cmd_queue)
+
+    p = sub.add_parser("web", help="open a page in your browser to search, tag and take notes")
+    p.add_argument("--port", type=int, default=8765)
+    p.add_argument("--no-browser", action="store_true", help="don't open a browser tab automatically")
+    p.set_defaults(func=cmd_web)
 
     p = sub.add_parser("mark", help="update outreach status after you send or hear back")
     p.add_argument("ids", nargs="+", type=int)
