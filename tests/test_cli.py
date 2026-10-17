@@ -83,3 +83,76 @@ def test_sync_without_cookies_explains_setup(run, capsys, monkeypatch):
     monkeypatch.delenv("LINKEDIN_JSESSIONID", raising=False)
     assert run("sync") == 1
     assert ".env.example" in capsys.readouterr().err
+
+
+def test_draft_with_claude(run, capsys, monkeypatch, tmp_path):
+    from netreach import ai_drafts
+
+    calls = []
+
+    def fake_write_draft(client, brief, contact, model, effort):
+        calls.append((contact["first_name"], model, effort, brief))
+        if contact["first_name"] == "John":
+            raise ai_drafts.DraftError("Claude declined to write this one.")
+        relevance = "high" if contact["first_name"] == "José" else "low"
+        return ai_drafts.Draft(f"Hey {contact['first_name']}!", relevance, f"{contact['position']} fit")
+
+    monkeypatch.setattr(ai_drafts, "make_client", lambda: object())
+    monkeypatch.setattr(ai_drafts, "write_draft", fake_write_draft)
+    brief = tmp_path / "brief.md"
+    brief.write_text("<!-- note to self -->\nSelling dashboards.")
+
+    run("import-csv", str(FIXTURE))
+    capsys.readouterr()
+    assert run("draft", "launch", "--brief", str(brief), "--effort", "low", "--workers", "2") == 0
+    out = capsys.readouterr()
+    assert "2 drafts added, 1 failed" in out.out and "skipped John Smith" in out.err
+    assert sorted(c[0] for c in calls) == ["Jane", "John", "José"]
+    assert all(c[1:] == ("claude-opus-5-5", "low", "Selling dashboards.") for c in calls)
+
+    # Rerunning only retries the contact that failed.
+    calls.clear()
+    assert run("draft", "launch", "--brief", str(brief)) == 0
+    assert [c[0] for c in calls] == ["John"]
+    capsys.readouterr()
+
+    # The queue shows the best fits first, with Claude's reasoning.
+    assert run("queue", "launch") == 0
+    out = capsys.readouterr().out
+    assert out.index("José") < out.index("Jane")
+    assert "fit: high (Software Engineer fit)" in out
+
+
+def test_draft_with_claude_stops_on_fatal_errors(run, capsys, monkeypatch, tmp_path):
+    from netreach import ai_drafts
+
+    def fake_write_draft(*args):
+        raise ai_drafts.FatalDraftError("The Anthropic API rejected your credentials.")
+
+    monkeypatch.setattr(ai_drafts, "make_client", lambda: object())
+    monkeypatch.setattr(ai_drafts, "write_draft", fake_write_draft)
+    brief = tmp_path / "brief.md"
+    brief.write_text("Selling dashboards.")
+    run("import-csv", str(FIXTURE))
+    assert run("draft", "launch", "--brief", str(brief), "--workers", "1") == 1
+    assert "rejected your credentials" in capsys.readouterr().err
+    assert run("queue", "launch") == 0
+    assert "0 draft" in capsys.readouterr().out
+
+
+def test_old_databases_get_new_outreach_columns(tmp_path):
+    import sqlite3
+
+    from netreach import db
+
+    path = tmp_path / "old.db"
+    old = sqlite3.connect(path)
+    old.executescript("""
+        CREATE TABLE outreach (id INTEGER PRIMARY KEY, contact_id INTEGER NOT NULL, campaign TEXT NOT NULL,
+            message TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'draft', created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL, UNIQUE(contact_id, campaign));
+    """)
+    old.close()
+    conn = db.connect(path)
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(outreach)")}
+    assert {"relevance", "reason"} <= columns

@@ -6,9 +6,12 @@ import os
 import random
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-from netreach import db, templates
+import anthropic
+
+from netreach import ai_drafts, db, templates
 from netreach.segment import Filters, select_contacts
 from netreach.sources import csv_export, linkedin_sync
 
@@ -196,6 +199,9 @@ def cmd_export(conn, args) -> int:
 
 
 def cmd_draft(conn, args) -> int:
+    if args.brief:
+        return draft_with_claude(conn, args)
+
     template = Path(args.template).read_text() if args.template else args.message
     try:
         templates.check(template)
@@ -223,10 +229,76 @@ def cmd_draft(conn, args) -> int:
     return 0
 
 
+def draft_with_claude(conn, args) -> int:
+    brief = ai_drafts.clean_brief(Path(args.brief).read_text())
+    if not brief:
+        print(f"error: {args.brief} is empty", file=sys.stderr)
+        return 1
+
+    rows = select_contacts(conn, filters_from(args))
+    # Skip people already in the campaign before calling the API, so reruns don't pay twice.
+    already = db.campaign_contact_ids(conn, args.campaign)
+    todo = [row for row in rows if row["id"] not in already]
+    if len(todo) < len(rows):
+        print(f"{len(rows) - len(todo)} matching contacts are already in '{args.campaign}'; skipping them.")
+    if not todo:
+        return 0
+
+    try:
+        client = ai_drafts.make_client()
+    except anthropic.AnthropicError as exc:
+        print(f"error: couldn't set up the Anthropic client ({exc}). Set ANTHROPIC_API_KEY.", file=sys.stderr)
+        return 1
+
+    print(f"Asking {args.model} to draft {len(todo)} messages ({args.workers} at a time)...")
+    added = failed = 0
+    executor = ThreadPoolExecutor(max_workers=max(1, args.workers))
+    futures = {
+        executor.submit(ai_drafts.write_draft, client, brief, row, args.model, args.effort): row
+        for row in todo
+    }
+    try:
+        for done, future in enumerate(as_completed(futures), 1):
+            row = futures[future]
+            name = f"{row['first_name']} {row['last_name']}".strip()
+            try:
+                draft = future.result()
+            except ai_drafts.FatalDraftError as exc:
+                print(f"error: {exc}", file=sys.stderr)
+                return 1
+            except ai_drafts.DraftError as exc:
+                failed += 1
+                print(f"  skipped {name}: {exc}", file=sys.stderr)
+                continue
+
+            if args.dry_run:
+                print(f"--- {name} ({draft.relevance}: {draft.reason})  {row['profile_url']}\n{draft.message}\n")
+                continue
+            with conn:  # save each draft as it arrives so an interrupted run keeps its work
+                db.add_draft(conn, row["id"], args.campaign, draft.message, draft.relevance, draft.reason)
+            added += 1
+            if done % 25 == 0:
+                print(f"  ...{done} of {len(todo)}")
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
+
+    if args.dry_run:
+        print(f"{len(todo) - failed} drafts previewed; nothing saved.")
+    else:
+        print(f"Campaign '{args.campaign}': {added} drafts added, {failed} failed.")
+        if failed:
+            print("Run the same command again to retry the ones that failed.")
+        print(f"Next: netreach queue {args.campaign}")
+    return 0
+
+
 def cmd_queue(conn, args) -> int:
-    sql = """SELECT o.id, o.status, o.message, c.first_name, c.last_name, c.profile_url, c.email
+    sql = """SELECT o.id, o.status, o.message, o.relevance, o.reason,
+                    c.first_name, c.last_name, c.profile_url, c.email
              FROM outreach o JOIN contacts c ON c.id = o.contact_id
-             WHERE o.campaign = ? AND o.status = ? ORDER BY o.id"""
+             WHERE o.campaign = ? AND o.status = ?
+             ORDER BY CASE o.relevance WHEN 'high' THEN 0 WHEN 'medium' THEN 1 WHEN 'low' THEN 2 ELSE 3 END,
+                      o.id"""
     params = [args.campaign, args.status]
     if args.limit:
         sql += " LIMIT ?"
@@ -236,14 +308,17 @@ def cmd_queue(conn, args) -> int:
     if args.csv:
         with open(args.csv, "w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
-            writer.writerow(("id", "status", "first_name", "last_name", "profile_url", "email", "message"))
+            columns = ("id", "status", "relevance", "reason", "first_name", "last_name", "profile_url", "email", "message")
+            writer.writerow(columns)
             for row in rows:
-                writer.writerow([row[k] for k in ("id", "status", "first_name", "last_name", "profile_url", "email", "message")])
+                writer.writerow([row[k] for k in columns])
         print(f"Wrote {len(rows)} {args.status} messages to {args.csv}.")
         return 0
 
     for row in rows:
         print(f"[{row['id']}] {row['first_name']} {row['last_name']}  {row['profile_url']}")
+        if row["relevance"]:
+            print(f"    fit: {row['relevance']} ({row['reason']})")
         print(row["message"])
         print()
     print(f"{len(rows)} {args.status} in '{args.campaign}'. After sending: netreach mark <id>... --status sent")
@@ -303,7 +378,14 @@ def build_parser() -> argparse.ArgumentParser:
     source = p.add_mutually_exclusive_group(required=True)
     source.add_argument("--template", help="file with the message template")
     source.add_argument("--message", help="message template given inline")
-    p.add_argument("--dry-run", action="store_true", help="preview without saving")
+    source.add_argument("--brief", help="campaign brief file; Claude writes each message (needs ANTHROPIC_API_KEY)")
+    p.add_argument("--dry-run", action="store_true",
+                   help="preview without saving (with --brief, this still calls the API)")
+    claude = p.add_argument_group("with --brief")
+    claude.add_argument("--model", default=ai_drafts.DEFAULT_MODEL)
+    claude.add_argument("--effort", choices=ai_drafts.EFFORTS, default="medium",
+                        help="how hard Claude thinks per message; lower is cheaper (default medium)")
+    claude.add_argument("--workers", type=int, default=4, help="drafts written in parallel (default 4)")
     add_filter_args(p)
     p.set_defaults(func=cmd_draft)
 

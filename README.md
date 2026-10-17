@@ -1,7 +1,7 @@
 # netreach
 
-Pull your LinkedIn network into a local database, slice it into segments, and draft
-personalized messages you send yourself.
+Pull your LinkedIn network into a local database, slice it into segments, and have
+Claude draft a personalized message for each person, which you review and send yourself.
 
 There are two ways to get your connections in, and you can use both. Records for the
 same person are merged by their profile URL.
@@ -86,8 +86,10 @@ netreach stats
 netreach list --title "founder,ceo,owner" --connected-after 2023-01-01
 netreach list --company acme --has-email
 
-# 3. Draft a campaign for a segment (preview first)
-netreach draft spring-launch --template templates/example.txt --title "founder,ceo" --dry-run
+# 3. Have Claude draft a campaign for a segment (preview a few first)
+netreach draft spring-launch --brief my-brief.md --title "founder,ceo" --limit 5 --dry-run
+netreach draft spring-launch --brief my-brief.md --title "founder,ceo"
+#    ...or fill in a fixed template instead (free, no API key)
 netreach draft spring-launch --template templates/example.txt --title "founder,ceo"
 
 # 4. Work the queue by hand: open each profile, paste the message, send
@@ -112,6 +114,40 @@ netreach export founders.csv --title "founder,ceo"
 | `--connected-after` / `--connected-before` | connection date, `YYYY-MM-DD` |
 | `--has-email` | only people who shared an email with their connections |
 | `--limit` | at most N contacts |
+
+### Claude-written drafts
+
+With `--brief`, Claude writes each message from scratch using the person's role,
+company, headline, location and how long you've been connected. It also rates how well
+your offer fits them (`high`, `medium` or `low`) with a one-line reason. The queue
+lists the best fits first.
+
+1. Get an API key at [console.anthropic.com](https://console.anthropic.com) and add
+   `ANTHROPIC_API_KEY=...` to `.env` (or run `ant auth login`).
+2. Copy `templates/brief-example.md` and rewrite it for your campaign: who you are,
+   what you're offering, who it's for (and who it isn't), the ask, and your tone.
+   `<!-- comments -->` in the file are not sent.
+3. Preview a handful with `--limit 5 --dry-run`. Adjust the brief until they sound like
+   you, then run without `--dry-run`.
+
+Things to know:
+
+- **You review everything.** Claude only drafts; nothing is sent. It's told not to
+  invent facts about people, but read each message before you send it.
+- **What's sent to Anthropic:** each contact's name, headline, company, position,
+  location and connection date, plus your brief. Emails and phone numbers are never sent.
+- **Cost:** the default model is `claude-opus-5-5` ($4 / $20 per million input / output
+  tokens). A draft is under 1,000 input tokens plus the message and Claude's thinking,
+  so expect roughly 1–4 cents per draft at the default `--effort medium`. Use
+  `--effort low` to make it cheaper, or `--model` for a different model. Check
+  actual spend in the Console after a small run.
+- **Reruns are cheap:** people already in the campaign are skipped *before* any API
+  call, so rerunning the same command retries only the ones that failed.
+- **Refusals:** requests opt in to the API's server-side fallback, so if a safety
+  check declines one, the API retries it on Anthropic's recommended fallback model.
+  If that also fails, that contact is skipped.
+- `--workers` (default 4) sets how many drafts are written at once. Lower it if you
+  hit rate limits.
 
 ### Templates
 

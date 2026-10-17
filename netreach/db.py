@@ -34,6 +34,8 @@ CREATE TABLE IF NOT EXISTS outreach (
     campaign TEXT NOT NULL,
     message TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'draft',
+    relevance TEXT NOT NULL DEFAULT '',
+    reason TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     UNIQUE(contact_id, campaign)
@@ -59,7 +61,17 @@ def connect(path: str | Path) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     conn.executescript(SCHEMA)
+    _migrate(conn)
     return conn
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Add columns introduced after a database was first created."""
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(outreach)")}
+    with conn:
+        for column in ("relevance", "reason"):
+            if column not in columns:
+                conn.execute(f"ALTER TABLE outreach ADD COLUMN {column} TEXT NOT NULL DEFAULT ''")
 
 
 def upsert_contact(conn: sqlite3.Connection, contact: Contact) -> bool:
@@ -128,15 +140,21 @@ def set_contact_info(conn: sqlite3.Connection, contact_id: int, email: str, phon
         )
 
 
-def add_draft(conn: sqlite3.Connection, contact_id: int, campaign: str, message: str) -> bool:
+def add_draft(conn: sqlite3.Connection, contact_id: int, campaign: str, message: str,
+              relevance: str = "", reason: str = "") -> bool:
     """Store a draft unless the contact is already in this campaign. Returns True if added."""
     ts = now()
     cur = conn.execute(
-        """INSERT OR IGNORE INTO outreach (contact_id, campaign, message, status, created_at, updated_at)
-           VALUES (?, ?, ?, 'draft', ?, ?)""",
-        (contact_id, campaign, message, ts, ts),
+        """INSERT OR IGNORE INTO outreach
+               (contact_id, campaign, message, status, relevance, reason, created_at, updated_at)
+           VALUES (?, ?, ?, 'draft', ?, ?, ?, ?)""",
+        (contact_id, campaign, message, relevance, reason, ts, ts),
     )
     return cur.rowcount == 1
+
+
+def campaign_contact_ids(conn: sqlite3.Connection, campaign: str) -> set[int]:
+    return {row[0] for row in conn.execute("SELECT contact_id FROM outreach WHERE campaign = ?", (campaign,))}
 
 
 def set_outreach_status(conn: sqlite3.Connection, outreach_ids, status: str) -> int:
